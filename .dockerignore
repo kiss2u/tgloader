@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+
+# Build outputs
+tgloader
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temp
+tmp/
+temp/
+*.tmp
+
+# Downloads (runtime data)
+downloads/
+cache/
+session/
+
+# Environment
+.env
+.env.local

@@ -1,0 +1,32 @@
+# ===========================================
+# Telegram Bot Settings
+# ===========================================
+telegram:
+  token: "YOUR_BOT_TOKEN"
+  app_id: 123456
+  app_hash: "your_app_hash"
+  # phone: "+1234567890"          # For userbot mode (optional)
+  # session_string: ""             # For userbot mode (optional)
+  allowed_chat_ids: []
+
+# ===========================================
+# Storage Settings
+# ===========================================
+storage:
+  base_path: "./downloads"
+  temp_path: "./tmp"
+  categories:
+    documents: "Documents"
+    archives: "Archives"
+    videos: "Videos"
+    audio: "Audio"
+    images: "Images"
+    ebooks: "Ebooks"
+    software: "Software"
+
+# ===========================================
+# Download Settings
+# ===========================================
+downloads:
+  concurrent_limit: 5
+  timeout: 30

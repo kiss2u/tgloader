@@ -1,0 +1,42 @@
+# Git
+.git
+
+# Build outputs
+tgloader
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temp
+tmp/
+temp/
+*.tmp
+
+# Downloads (runtime data) - DO NOT COMMIT
+downloads/
+cache/
+session/
+
+# Environment
+.env
+.env.local
+BN|
+# Config (sensitive)
+config.yaml
+# nul file (windows artifact)
+nul
