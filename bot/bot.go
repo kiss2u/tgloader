@@ -62,10 +62,20 @@ func (s *Service) initMTProto() error {
 		log.Printf("Warning: failed to create session dir: %v", err)
 	}
 
-	log.Println("Creating MTProto client...")
+	log.Println("Creating MTProto client with bot token...")
+	
+	// Bot mode: use app_id=0 and app_hash="" when using bot token
+	// gotgproto will handle bot authentication automatically
+	appID := s.cfg.Telegram.AppID
+	appHash := s.cfg.Telegram.AppHash
+	
+	// If using bot token, we can use default app_id/app_hash
+	// but having valid ones doesn't hurt
+	log.Printf("Using AppID: %d, AppHash: %s", appID, appHash[:8]+"...")
+
 	client, err := gotgproto.NewClient(
-		int(s.cfg.Telegram.AppID),
-		s.cfg.Telegram.AppHash,
+		int(appID),
+		appHash,
 		gotgproto.ClientTypeBot(token),
 		&gotgproto.ClientOpts{
 			Session: sessionMaker.SqlSession(sqlite.Open("./session/tgloader.db")),
@@ -75,6 +85,8 @@ func (s *Service) initMTProto() error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 
+	log.Println("MTProto client created, starting connection...")
+	
 	s.client = client
 	return nil
 }
@@ -123,6 +135,7 @@ func (s *Service) isAuthorized(ctx *ext.Context, update *ext.Update) bool {
 }
 
 func (s *Service) Run(ctx context.Context) error {
+	log.Println("Registering command handlers...")
 	s.client.Dispatcher.AddHandler(handlers.NewCommand("start", s.handleStart))
 	s.client.Dispatcher.AddHandler(handlers.NewCommand("help", s.handleHelp))
 	s.client.Dispatcher.AddHandler(handlers.NewCommand("queue", s.handleQueue))
@@ -131,6 +144,7 @@ func (s *Service) Run(ctx context.Context) error {
 	s.client.Dispatcher.AddHandler(handlers.NewCommand("cancel", s.handleCancel))
 	s.client.Dispatcher.AddHandler(handlers.NewCommand("cancelall", s.handleCancelAll))
 	s.client.Dispatcher.AddHandler(handlers.NewMessage(filters.Message.Media, s.handleMedia))
+	log.Println("All handlers registered, starting MTProto client...")
 
 	log.Println("Starting Telegram client (MTProto)...")
 
