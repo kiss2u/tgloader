@@ -6,6 +6,8 @@ services:
     container_name: tgloader
     restart: unless-stopped
     
+    # No port needed - Telegram bot uses MTProto (not HTTP)
+    
     volumes:
       - ./downloads:/app/downloads
       - ./cache:/app/cache

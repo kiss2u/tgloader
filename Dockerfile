@@ -33,8 +33,7 @@ COPY --from=builder /app/config.yaml.example ./config.yaml
 # Create directories
 RUN mkdir -p downloads cache session
 
-# Expose port (if needed)
-EXPOSE 8080
-
+# Run the application
+CMD ["./tgloader"]
 # Run the application
 CMD ["./tgloader"]
