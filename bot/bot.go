@@ -47,46 +47,67 @@ func NewService(cfg *config.Config, downloadMgr *download.Manager, downloadQueue
 }
 
 func (s *Service) initMTProto() error {
-	token := s.cfg.Telegram.GetToken()
-	if token == "" {
-		log.Println("ERROR: Token is empty!")
-		return fmt.Errorf("TELEGRAM_TOKEN not set")
-	}
-	if len(token) > 20 {
-		log.Printf("Init MTProto with token: %s...", token[:20])
-	} else {
-		log.Printf("Init MTProto with token: %s", token)
-	}
-
+	// Check configuration - prioritize userbot (phone/session_string) over bot token
+	hasBotToken := s.cfg.Telegram.Token != ""
+	hasPhone := s.cfg.Telegram.Phone != ""
+	hasSessionString := s.cfg.Telegram.SessionString != ""
+	
 	if err := os.MkdirAll("./session", 0755); err != nil {
 		log.Printf("Warning: failed to create session dir: %v", err)
 	}
 
-	log.Println("Creating MTProto client with bot token...")
-	
-	// Bot mode: use app_id=0 and app_hash="" when using bot token
-	// gotgproto will handle bot authentication automatically
 	appID := s.cfg.Telegram.AppID
 	appHash := s.cfg.Telegram.AppHash
 	
-	// If using bot token, we can use default app_id/app_hash
-	// but having valid ones doesn't hurt
-	log.Printf("Using AppID: %d, AppHash: %s", appID, appHash[:8]+"...")
+	var client *gotgproto.Client
+	var err error
 
-	client, err := gotgproto.NewClient(
-		int(appID),
-		appHash,
-		gotgproto.ClientTypeBot(token),
-		&gotgproto.ClientOpts{
-			Session: sessionMaker.SqlSession(sqlite.Open("./session/tgloader.db")),
-		},
-	)
+	if hasPhone || hasSessionString {
+		// Userbot mode
+		log.Println("=== Userbot Mode ===")
+		if hasSessionString {
+			log.Println("Using saved session string...")
+			client, err = gotgproto.NewClient(
+				int(appID),
+				appHash,
+				gotgproto.ClientTypeBot(s.cfg.Telegram.SessionString),
+				&gotgproto.ClientOpts{
+					Session: sessionMaker.SqlSession(sqlite.Open("./session/tgloader.db")),
+				},
+			)
+		} else {
+			log.Printf("Using phone: %s", s.cfg.Telegram.Phone)
+			log.Println("Note: Will require verification code on first login")
+			client, err = gotgproto.NewClient(
+				int(appID),
+				appHash,
+				gotgproto.ClientTypePhone(s.cfg.Telegram.Phone),
+				&gotgproto.ClientOpts{
+					Session: sessionMaker.SqlSession(sqlite.Open("./session/tgloader.db")),
+				},
+			)
+		}
+	} else if hasBotToken {
+		// Bot mode
+		log.Println("=== Bot Mode ===")
+		log.Printf("Using bot token: %s...", s.cfg.Telegram.Token[:20])
+		client, err = gotgproto.NewClient(
+			int(appID),
+			appHash,
+			gotgproto.ClientTypeBot(s.cfg.Telegram.Token),
+			&gotgproto.ClientOpts{
+				Session: sessionMaker.SqlSession(sqlite.Open("./session/tgloader.db")),
+			},
+		)
+	} else {
+		return fmt.Errorf("no valid auth method: need bot token OR phone/session_string")
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 
-	log.Println("MTProto client created, starting connection...")
-	
+	log.Println("MTProto client created successfully!")
 	s.client = client
 	return nil
 }
