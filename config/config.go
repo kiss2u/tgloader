@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -44,12 +43,15 @@ type DownloadConfig struct {
 	Timeout         int `yaml:"timeout" json:"timeout"`
 }
 
-// Load loads the configuration from a YAML file
+// Load loads the configuration from config.yaml
 func Load() (*Config, error) {
-	configPath := getEnv("CONFIG_PATH", "./config.yaml")
-
+	// Check /app/config.yaml first (Docker), then local config.yaml
+	configPath := "/app/config.yaml"
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return loadDefaults(), nil
+		configPath = "./config.yaml"
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			return nil, fmt.Errorf("config file not found: /app/config.yaml or ./config.yaml")
+		}
 	}
 
 	data, err := ioutil.ReadFile(configPath)
@@ -63,10 +65,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	applyEnvironmentOverrides(&config)
-
 	// Check: either bot token OR (app_id + app_hash + phone/session_string)
-	hasBotToken := config.Telegram.Token != "" || getEnv("TELEGRAM_TOKEN", "") != ""
+	hasBotToken := config.Telegram.Token != ""
 	hasMTProto := config.Telegram.AppID > 0 && config.Telegram.AppHash != "" &&
 		(config.Telegram.Phone != "" || config.Telegram.SessionString != "")
 
@@ -75,77 +75,4 @@ func Load() (*Config, error) {
 	}
 
 	return &config, nil
-}
-
-// loadDefaults creates a configuration with default values
-func loadDefaults() *Config {
-	return &Config{
-		Telegram: TelegramConfig{
-			Token:          "",
-			AllowedChatIDs: []int64{},
-			AppID:          0,
-			AppHash:        "",
-			Phone:          "",
-			SessionString:  "",
-		},
-		Storage: StorageConfig{
-			BasePath: "./downloads",
-			TempPath: "./tmp",
-			Categories: map[string]string{
-				"documents": "Documents",
-				"archives":  "Archives",
-				"videos":    "Videos",
-				"audio":     "Audio",
-				"images":    "Images",
-				"ebooks":    "Ebooks",
-				"software":  "Software",
-			},
-		},
-		Downloads: DownloadConfig{
-			ConcurrentLimit: 5,
-			Timeout:         30,
-		},
-	}
-}
-
-// applyEnvironmentOverrides applies environment variable settings
-func applyEnvironmentOverrides(config *Config) {
-	if token := getEnv("TELEGRAM_TOKEN", ""); token != "" {
-		config.Telegram.Token = token
-	}
-
-	if storagePath := getEnv("STORAGE_PATH", ""); storagePath != "" {
-		config.Storage.BasePath = storagePath
-	}
-
-	if maxConcurrentStr := getEnv("MAX_CONCURRENT_DOWNLOADS", ""); maxConcurrentStr != "" {
-		if max, err := strconv.Atoi(maxConcurrentStr); err == nil {
-			config.Downloads.ConcurrentLimit = max
-		}
-	}
-
-	if appID := getEnv("TELEGRAM_APP_ID", ""); appID != "" {
-		if id, err := strconv.ParseInt(appID, 10, 64); err == nil {
-			config.Telegram.AppID = id
-		}
-	}
-
-	if appHash := getEnv("TELEGRAM_APP_HASH", ""); appHash != "" {
-		config.Telegram.AppHash = appHash
-	}
-
-	if phone := getEnv("TELEGRAM_PHONE", ""); phone != "" {
-		config.Telegram.Phone = phone
-	}
-
-	if sessionString := getEnv("TELEGRAM_SESSION_STRING", ""); sessionString != "" {
-		config.Telegram.SessionString = sessionString
-	}
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
 }
