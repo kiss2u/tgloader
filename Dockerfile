@@ -1,4 +1,5 @@
-FROM golang:1.21-alpine AS builder
+# Build stage
+FROM golang:1.24-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git gcc musl-dev
@@ -25,7 +26,9 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /app/tgloader .
-COPY --from=builder /app/config.yaml .
+
+# Copy config example
+COPY --from=builder /app/config.yaml.example ./config.yaml
 
 # Create directories
 RUN mkdir -p downloads cache session
