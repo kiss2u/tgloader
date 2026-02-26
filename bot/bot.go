@@ -47,23 +47,21 @@ func NewService(cfg *config.Config, downloadMgr *download.Manager, downloadQueue
 }
 
 func (s *Service) initMTProto() error {
-	// Check configuration - prioritize userbot (phone/session_string) over bot token
 	hasBotToken := s.cfg.Telegram.Token != ""
 	hasPhone := s.cfg.Telegram.Phone != ""
 	hasSessionString := s.cfg.Telegram.SessionString != ""
-	
+
 	if err := os.MkdirAll("./session", 0755); err != nil {
 		log.Printf("Warning: failed to create session dir: %v", err)
 	}
 
 	appID := s.cfg.Telegram.AppID
 	appHash := s.cfg.Telegram.AppHash
-	
+
 	var client *gotgproto.Client
 	var err error
 
 	if hasPhone || hasSessionString {
-		// Userbot mode
 		log.Println("=== Userbot Mode ===")
 		if hasSessionString {
 			log.Println("Using saved session string...")
@@ -88,7 +86,6 @@ func (s *Service) initMTProto() error {
 			)
 		}
 	} else if hasBotToken {
-		// Bot mode
 		log.Println("=== Bot Mode ===")
 		log.Printf("Using bot token: %s...", s.cfg.Telegram.Token[:20])
 		client, err = gotgproto.NewClient(
@@ -112,28 +109,33 @@ func (s *Service) initMTProto() error {
 	return nil
 }
 
-// isAllowed checks if user is allowed to use the bot
-func (s *Service) isAllowed(update *ext.Update) bool {
-	if len(s.cfg.Telegram.AllowedChatIDs) == 0 {
-		return true // No restriction if empty
-	}
-
+func getUserID(update *ext.Update) int64 {
 	msg := update.EffectiveMessage
 	if msg == nil {
-		return false
+		return 0
 	}
-
-	// Get user ID from PeerID
-	var userID int64 = 0
 	if msg.PeerID != nil {
 		switch peer := msg.PeerID.(type) {
 		case *tg.PeerUser:
-			userID = peer.UserID
+			return peer.UserID
 		case *tg.PeerChat:
-			userID = -peer.ChatID
+			return -peer.ChatID
 		case *tg.PeerChannel:
-			userID = -peer.ChannelID
+			return -peer.ChannelID
 		}
+	}
+	return 0
+}
+
+func (s *Service) isAllowed(update *ext.Update) bool {
+	// Allow all users for userbot mode
+	if len(s.cfg.Telegram.AllowedChatIDs) == 0 {
+		return true
+	}
+
+	userID := getUserID(update)
+	if userID == 0 {
+		return false
 	}
 
 	for _, allowedID := range s.cfg.Telegram.AllowedChatIDs {
@@ -146,7 +148,6 @@ func (s *Service) isAllowed(update *ext.Update) bool {
 	return false
 }
 
-// isAuthorized replies with error if user not allowed
 func (s *Service) isAuthorized(ctx *ext.Context, update *ext.Update) bool {
 	if !s.isAllowed(update) {
 		_, _ = ctx.Reply(update, ext.ReplyTextString("❌ 未授权用户"), nil)
@@ -176,7 +177,6 @@ func (s *Service) Run(ctx context.Context) error {
 	return err
 }
 
-// Mobile-friendly response helper
 func mobileReply(ctx *ext.Context, update *ext.Update, text string) {
 	_, _ = ctx.Reply(update, ext.ReplyTextString(text), nil)
 }
@@ -216,7 +216,7 @@ func (s *Service) handleHelp(ctx *ext.Context, update *ext.Update) error {
 	msg := `命令帮助：
 
 /queue   下载队列
-/pro 查看gress 查看下载进度
+/progress 查看下载进度
 /stats    下载统计
 /cancel   取消下载
 /cancelall 取消全部
@@ -240,7 +240,6 @@ func (s *Service) handleQueue(ctx *ext.Context, update *ext.Update) error {
 	activeCount := len(activeJobs)
 	queuedCount := len(queuedJobs)
 
-	// Mobile-friendly: single line summary first
 	msg := fmt.Sprintf("📋 队列: 📥%d | ⏳%d\n", activeCount, queuedCount)
 
 	if activeCount == 0 && queuedCount == 0 {
@@ -249,7 +248,6 @@ func (s *Service) handleQueue(ctx *ext.Context, update *ext.Update) error {
 		return nil
 	}
 
-	// Show active downloads (mobile: max 3)
 	if activeCount > 0 {
 		msg += "📥 下载中:\n"
 		for i, job := range activeJobs {
@@ -265,7 +263,6 @@ func (s *Service) handleQueue(ctx *ext.Context, update *ext.Update) error {
 		}
 	}
 
-	// Show queued (mobile: max 2)
 	if queuedCount > 0 {
 		msg += "⏳ 等待:\n"
 		for i, job := range queuedJobs {
@@ -304,7 +301,6 @@ func (s *Service) handleProgress(ctx *ext.Context, update *ext.Update) error {
 		return nil
 	}
 
-	// Show progress (mobile: max 3)
 	if activeCount > 0 {
 		for _, job := range activeJobs {
 			size := formatBytes(job.DownloadedSize)
@@ -341,7 +337,6 @@ func (s *Service) handleStats(ctx *ext.Context, update *ext.Update) error {
 	activeJobs := s.downloadMgr.GetActiveDownloads()
 	queuedJobs := s.downloadMgr.GetQueuedJobs()
 
-	// Mobile-friendly: compact stats
 	msg := "📈 统计\n"
 	msg += fmt.Sprintf("✅ 完成: %d\n", stats.Completed)
 	msg += fmt.Sprintf("❌ 失败: %d\n", stats.Failed)
@@ -364,7 +359,6 @@ func (s *Service) handleCancel(ctx *ext.Context, update *ext.Update) error {
 	msg := update.EffectiveMessage
 	text := strings.TrimSpace(msg.Text)
 
-	// Parse number from command
 	if len(text) > 8 {
 		numStr := strings.TrimPrefix(text, "/cancel")
 		numStr = strings.TrimSpace(numStr)
@@ -393,7 +387,6 @@ func (s *Service) handleCancel(ctx *ext.Context, update *ext.Update) error {
 		return nil
 	}
 
-	// Show list (mobile: max 5)
 	response := "选择取消:\n\n"
 	allJobs := append(activeJobs, queuedJobs...)
 	for i, job := range allJobs {
@@ -432,12 +425,10 @@ func (s *Service) handleMedia(ctx *ext.Context, update *ext.Update) error {
 		return dispatcher.EndGroups
 	}
 
-	// Check authorization before processing
 	if !s.isAuthorized(ctx, update) {
 		return dispatcher.EndGroups
 	}
 
-	// Skip commands
 	if len(msg.Text) > 0 && msg.Text[0] == '/' {
 		return dispatcher.EndGroups
 	}
@@ -449,7 +440,6 @@ func (s *Service) handleMedia(ctx *ext.Context, update *ext.Update) error {
 
 	filename = optimizeFilename(filename)
 
-	// Quick acknowledgment (mobile-friendly)
 	mobileReply(ctx, update, fmt.Sprintf("📥 下载中: %s", truncate(filename, 30)))
 
 	category := models.GetFileCategory(filename)
@@ -484,7 +474,6 @@ func (s *Service) handleMedia(ctx *ext.Context, update *ext.Update) error {
 
 	s.downloadMgr.Submit(job)
 
-	// Pass context to goroutine properly
 	go func(jobCtx *ext.Context, jobUpdate *ext.Update, jobFilename string, jobMedia tg.MessageMediaClass, jobTargetPath string) {
 		const maxRetries = 3
 		retryCount := 0
