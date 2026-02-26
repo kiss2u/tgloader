@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  tgloader:
+    image: ghcr.io/kiss2u/tgloader:latest
+    container_name: tgloader
+    restart: unless-stopped
+    
+    volumes:
+      - ./downloads:/app/downloads
+      - ./cache:/app/cache
+      - ./session:/app/session
+      - ./config.yaml:/app/config.yaml:ro
+    
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+    
+    # Optional: limit resources
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '1'
+    #       memory: 512M
+
+    # Optional: network configuration
+    # networks:
+    #   - tgloader-network
+
+# networks:
+#   tgloader-network:
+#     driver: bridge
