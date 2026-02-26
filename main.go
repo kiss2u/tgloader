@@ -15,10 +15,15 @@ import (
 )
 
 func main() {
+	// Flush log immediately for Docker
+	log.SetOutput(os.Stdout)
+	log.SetFlags(log.LstdFlags)
+
+	log.Println("=== TGloader Starting ===")
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	// Load config
+	log.Println("Loading config...")
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)

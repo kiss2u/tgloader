@@ -32,6 +32,7 @@ type Service struct {
 }
 
 func NewService(cfg *config.Config, downloadMgr *download.Manager, downloadQueue chan *models.DownloadJob) (*Service, error) {
+	log.Println("Creating bot service...")
 	s := &Service{
 		cfg:           cfg,
 		downloadMgr:   downloadMgr,
@@ -48,16 +49,20 @@ func NewService(cfg *config.Config, downloadMgr *download.Manager, downloadQueue
 func (s *Service) initMTProto() error {
 	token := s.cfg.Telegram.GetToken()
 	if token == "" {
-		token = os.Getenv("TELEGRAM_TOKEN")
-	}
-	if token == "" {
+		log.Println("ERROR: Token is empty!")
 		return fmt.Errorf("TELEGRAM_TOKEN not set")
+	}
+	if len(token) > 20 {
+		log.Printf("Init MTProto with token: %s...", token[:20])
+	} else {
+		log.Printf("Init MTProto with token: %s", token)
 	}
 
 	if err := os.MkdirAll("./session", 0755); err != nil {
 		log.Printf("Warning: failed to create session dir: %v", err)
 	}
 
+	log.Println("Creating MTProto client...")
 	client, err := gotgproto.NewClient(
 		int(s.cfg.Telegram.AppID),
 		s.cfg.Telegram.AppHash,
@@ -72,6 +77,49 @@ func (s *Service) initMTProto() error {
 
 	s.client = client
 	return nil
+}
+
+// isAllowed checks if user is allowed to use the bot
+func (s *Service) isAllowed(update *ext.Update) bool {
+	if len(s.cfg.Telegram.AllowedChatIDs) == 0 {
+		return true // No restriction if empty
+	}
+
+	msg := update.EffectiveMessage
+	if msg == nil {
+		return false
+	}
+
+	// Get user ID from PeerID
+	var userID int64 = 0
+	if msg.PeerID != nil {
+		switch peer := msg.PeerID.(type) {
+		case *tg.PeerUser:
+			userID = peer.UserID
+		case *tg.PeerChat:
+			userID = -peer.ChatID
+		case *tg.PeerChannel:
+			userID = -peer.ChannelID
+		}
+	}
+
+	for _, allowedID := range s.cfg.Telegram.AllowedChatIDs {
+		if userID == allowedID {
+			return true
+		}
+	}
+
+	log.Printf("Unauthorized access attempt from user ID: %d", userID)
+	return false
+}
+
+// isAuthorized replies with error if user not allowed
+func (s *Service) isAuthorized(ctx *ext.Context, update *ext.Update) bool {
+	if !s.isAllowed(update) {
+		_, _ = ctx.Reply(update, ext.ReplyTextString("❌ 未授权用户"), nil)
+		return false
+	}
+	return true
 }
 
 func (s *Service) Run(ctx context.Context) error {
@@ -93,117 +141,135 @@ func (s *Service) Run(ctx context.Context) error {
 	return err
 }
 
+// Mobile-friendly response helper
+func mobileReply(ctx *ext.Context, update *ext.Update, text string) {
+	_, _ = ctx.Reply(update, ext.ReplyTextString(text), nil)
+}
+
 func (s *Service) handleStart(ctx *ext.Context, update *ext.Update) error {
 	if update.EffectiveMessage == nil {
 		return dispatcher.EndGroups
 	}
-	msg := `TGloader [MTProto]
+	if !s.isAuthorized(ctx, update) {
+		return dispatcher.EndGroups
+	}
 
-Forward files to download.
-Works with private channels - no 20MB limit!
+	msg := `TGloader 📥
 
-Commands:
-/queue    - Show download queue
-/progress  - Show download progress
-/stats    - Show download statistics
-/cancel   - Cancel a download
-/cancelall - Cancel all downloads
-/help     - Show this help`
-	_, err := ctx.Reply(update, ext.ReplyTextString(msg), nil)
-	return err
+转发文件自动下载
+支持私有频道，无20MB限制！
+
+命令：
+/queue    队列
+/progress 进度
+/stats    统计
+/cancel   取消
+/help     帮助`
+
+	mobileReply(ctx, update, msg)
+	return nil
 }
 
 func (s *Service) handleHelp(ctx *ext.Context, update *ext.Update) error {
 	if update.EffectiveMessage == nil {
 		return dispatcher.EndGroups
 	}
-	msg := `Available Commands:
+	if !s.isAuthorized(ctx, update) {
+		return dispatcher.EndGroups
+	}
 
-/queue     - Show download queue
-/progress   - Show download progress  
-/stats     - Show download statistics
-/cancel    - Cancel a download (shows list)
-/cancelall - Cancel all downloads
-/start     - Show welcome message`
-	_, err := ctx.Reply(update, ext.ReplyTextString(msg), nil)
-	return err
+	msg := `命令帮助：
+
+/queue   下载队列
+/pro 查看gress 查看下载进度
+/stats    下载统计
+/cancel   取消下载
+/cancelall 取消全部
+/start    欢迎信息`
+
+	mobileReply(ctx, update, msg)
+	return nil
 }
 
 func (s *Service) handleQueue(ctx *ext.Context, update *ext.Update) error {
 	if update.EffectiveMessage == nil {
 		return dispatcher.EndGroups
 	}
+	if !s.isAuthorized(ctx, update) {
+		return dispatcher.EndGroups
+	}
+
 	activeJobs := s.downloadMgr.GetActiveDownloads()
 	queuedJobs := s.downloadMgr.GetQueuedJobs()
 
 	activeCount := len(activeJobs)
 	queuedCount := len(queuedJobs)
 
-	// Header with counts
-	msg := fmt.Sprintf("📋 队列 (📥 %d | ⏳ %d)\n", activeCount, queuedCount)
-	msg += "├────────────────────┤\n"
+	// Mobile-friendly: single line summary first
+	msg := fmt.Sprintf("📋 队列: 📥%d | ⏳%d\n", activeCount, queuedCount)
 
 	if activeCount == 0 && queuedCount == 0 {
 		msg += "无活动下载"
-		_, err := ctx.Reply(update, ext.ReplyTextString(msg), nil)
-		return err
+		mobileReply(ctx, update, msg)
+		return nil
 	}
 
-	// Download list
+	// Show active downloads (mobile: max 3)
 	if activeCount > 0 {
-		msg += "📥 下载中\n"
+		msg += "📥 下载中:\n"
 		for i, job := range activeJobs {
+			if i >= 3 {
+				msg += fmt.Sprintf("...还有 %d 个\n", activeCount-i)
+				break
+			}
 			size := formatBytes(job.DownloadedSize)
 			if job.TotalSize > 0 {
 				size = fmt.Sprintf("%s/%s", formatBytes(job.DownloadedSize), formatBytes(job.TotalSize))
 			}
-			msg += fmt.Sprintf(" %d. 📄 %s\n    %s\n", i+1, truncate(job.Filename, 20), size)
+			msg += fmt.Sprintf("• %s\n  %s\n", truncate(job.Filename, 20), size)
 		}
-		msg += "├────────────────────┤\n"
 	}
 
-	// Queued list
+	// Show queued (mobile: max 2)
 	if queuedCount > 0 {
-		msg += "⏳ 等待中\n"
+		msg += "⏳ 等待:\n"
 		for i, job := range queuedJobs {
-			if i >= 5 {
-				msg += fmt.Sprintf(" ...还有 %d 个\n", queuedCount-i)
+			if i >= 2 {
+				msg += fmt.Sprintf("...还有 %d 个\n", queuedCount-i)
 				break
 			}
-			msg += fmt.Sprintf(" %d. 📄 %s\n", activeCount+i+1, truncate(job.Filename, 20))
+			msg += fmt.Sprintf("• %s\n", truncate(job.Filename, 24))
 		}
-	} else if activeCount > 0 {
-		msg += "✅ 队列已清空\n"
 	}
 
-	msg += "├────────────────────┤\n"
-	msg += "[刷新: /progress] [清空: /cancelall]"
-
-	_, err := ctx.Reply(update, ext.ReplyTextString(msg), nil)
-	return err
+	msg += "\n/ progress | / cancel"
+	mobileReply(ctx, update, msg)
+	return nil
 }
 
 func (s *Service) handleProgress(ctx *ext.Context, update *ext.Update) error {
 	if update.EffectiveMessage == nil {
 		return dispatcher.EndGroups
 	}
+	if !s.isAuthorized(ctx, update) {
+		return dispatcher.EndGroups
+	}
+
 	activeJobs := s.downloadMgr.GetActiveDownloads()
 	queuedJobs := s.downloadMgr.GetQueuedJobs()
 
 	activeCount := len(activeJobs)
 	queuedCount := len(queuedJobs)
 
-	// Header with counts
-	msg := fmt.Sprintf("📥 进度 (📥 %d | ⏳ %d)\n", activeCount, queuedCount)
-	msg += "├────────────────────┤\n"
+	msg := fmt.Sprintf("📥 进度: 📥%d | ⏳%d\n", activeCount, queuedCount)
 
 	if activeCount == 0 && queuedCount == 0 {
 		msg += "无活动下载"
-		_, err := ctx.Reply(update, ext.ReplyTextString(msg), nil)
-		return err
+		mobileReply(ctx, update, msg)
+		return nil
 	}
 
-	// Download progress
+	// Show progress (mobile: max 3)
 	if activeCount > 0 {
 		for _, job := range activeJobs {
 			size := formatBytes(job.DownloadedSize)
@@ -215,54 +281,55 @@ func (s *Service) handleProgress(ctx *ext.Context, update *ext.Update) error {
 				msg += fmt.Sprintf("   🚀 %s/s\n", formatBytes(job.DownloadSpeed))
 			}
 		}
-		msg += "├────────────────────┤\n"
 	}
 
-	// Queue
 	if queuedCount > 0 {
 		msg += fmt.Sprintf("⏳ 等待: %d 个\n", queuedCount)
 	} else {
 		msg += "✅ 无等待\n"
 	}
 
-	msg += "├────────────────────┤\n"
-	msg += "[刷新: /progress] [取消: /cancel]"
-
-	_, err := ctx.Reply(update, ext.ReplyTextString(msg), nil)
-	return err
+	msg += "\n/ progress | / cancel"
+	mobileReply(ctx, update, msg)
+	return nil
 }
 
 func (s *Service) handleStats(ctx *ext.Context, update *ext.Update) error {
 	if update.EffectiveMessage == nil {
 		return dispatcher.EndGroups
 	}
+	if !s.isAuthorized(ctx, update) {
+		return dispatcher.EndGroups
+	}
+
 	stats := s.downloadMgr.GetStats()
 	activeJobs := s.downloadMgr.GetActiveDownloads()
 	queuedJobs := s.downloadMgr.GetQueuedJobs()
 
+	// Mobile-friendly: compact stats
 	msg := "📈 统计\n"
-	msg += "├────────────────────┤\n"
-	msg += fmt.Sprintf("✅ 已完成: %d\n", stats.Completed)
+	msg += fmt.Sprintf("✅ 完成: %d\n", stats.Completed)
 	msg += fmt.Sprintf("❌ 失败: %d\n", stats.Failed)
-	msg += fmt.Sprintf("📥 下载: %d\n", len(activeJobs))
+	msg += fmt.Sprintf("📥 活跃: %d\n", len(activeJobs))
 	msg += fmt.Sprintf("⏳ 等待: %d\n", len(queuedJobs))
-	msg += "├────────────────────┤\n"
-	msg += fmt.Sprintf("📊 总计: %d\n", stats.Total)
-	msg += "├────────────────────┤\n"
-	msg += "[刷新: /stats]"
+	msg += fmt.Sprintf("📊 总计: %d", stats.Total)
 
-	_, err := ctx.Reply(update, ext.ReplyTextString(msg), nil)
-	return err
+	mobileReply(ctx, update, msg)
+	return nil
 }
 
 func (s *Service) handleCancel(ctx *ext.Context, update *ext.Update) error {
 	if update.EffectiveMessage == nil {
 		return dispatcher.EndGroups
 	}
+	if !s.isAuthorized(ctx, update) {
+		return dispatcher.EndGroups
+	}
 
 	msg := update.EffectiveMessage
 	text := strings.TrimSpace(msg.Text)
 
+	// Parse number from command
 	if len(text) > 8 {
 		numStr := strings.TrimPrefix(text, "/cancel")
 		numStr = strings.TrimSpace(numStr)
@@ -274,11 +341,11 @@ func (s *Service) handleCancel(ctx *ext.Context, update *ext.Update) error {
 			if num > 0 && num <= len(allJobs) {
 				job := allJobs[num-1]
 				_ = s.downloadMgr.CancelJob(job.ID)
-				_, err = ctx.Reply(update, ext.ReplyTextString(fmt.Sprintf("❌ 已取消: %s", job.Filename)), nil)
-				return err
+				mobileReply(ctx, update, fmt.Sprintf("❌ 已取消: %s", truncate(job.Filename, 30)))
+				return nil
 			} else {
-				_, err = ctx.Reply(update, ext.ReplyTextString(fmt.Sprintf("无效编号: %d", num)), nil)
-				return err
+				mobileReply(ctx, update, fmt.Sprintf("无效编号: %d", num))
+				return nil
 			}
 		}
 	}
@@ -287,32 +354,41 @@ func (s *Service) handleCancel(ctx *ext.Context, update *ext.Update) error {
 	queuedJobs := s.downloadMgr.GetQueuedJobs()
 
 	if len(activeJobs) == 0 && len(queuedJobs) == 0 {
-		_, err := ctx.Reply(update, ext.ReplyTextString("无下载可取消"), nil)
-		return err
+		mobileReply(ctx, update, "无下载可取消")
+		return nil
 	}
 
-	response := "选择要取消的下载:\n\n"
+	// Show list (mobile: max 5)
+	response := "选择取消:\n\n"
 	allJobs := append(activeJobs, queuedJobs...)
 	for i, job := range allJobs {
+		if i >= 5 {
+			response += fmt.Sprintf("...还有 %d 个", len(allJobs)-i)
+			break
+		}
 		status := "📥"
 		if job.Status == "queued" {
 			status = "⏳"
 		}
-		response += fmt.Sprintf("%d. %s %s\n", i+1, status, truncate(job.Filename, 25))
+		response += fmt.Sprintf("%d. %s %s\n", i+1, status, truncate(job.Filename, 20))
 	}
-	response += "\n回复 /cancel <编号>"
+	response += "\n/cancel 编号"
 
-	_, err := ctx.Reply(update, ext.ReplyTextString(response), nil)
-	return err
+	mobileReply(ctx, update, response)
+	return nil
 }
 
 func (s *Service) handleCancelAll(ctx *ext.Context, update *ext.Update) error {
 	if update.EffectiveMessage == nil {
 		return dispatcher.EndGroups
 	}
+	if !s.isAuthorized(ctx, update) {
+		return dispatcher.EndGroups
+	}
+
 	count := s.downloadMgr.CancelAll()
-	_, err := ctx.Reply(update, ext.ReplyTextString(fmt.Sprintf("❌ 已取消 %d 个下载", count)), nil)
-	return err
+	mobileReply(ctx, update, fmt.Sprintf("❌ 已取消 %d 个下载", count))
+	return nil
 }
 
 func (s *Service) handleMedia(ctx *ext.Context, update *ext.Update) error {
@@ -321,6 +397,12 @@ func (s *Service) handleMedia(ctx *ext.Context, update *ext.Update) error {
 		return dispatcher.EndGroups
 	}
 
+	// Check authorization before processing
+	if !s.isAuthorized(ctx, update) {
+		return dispatcher.EndGroups
+	}
+
+	// Skip commands
 	if len(msg.Text) > 0 && msg.Text[0] == '/' {
 		return dispatcher.EndGroups
 	}
@@ -330,25 +412,22 @@ func (s *Service) handleMedia(ctx *ext.Context, update *ext.Update) error {
 		filename = fmt.Sprintf("file_%d", msg.ID)
 	}
 
-	// Optimize filename
 	filename = optimizeFilename(filename)
 
-	// Reply immediately
-	_, _ = ctx.Reply(update, ext.ReplyTextString(fmt.Sprintf("📥 下载中: %s", filename)), nil)
+	// Quick acknowledgment (mobile-friendly)
+	mobileReply(ctx, update, fmt.Sprintf("📥 下载中: %s", truncate(filename, 30)))
 
-	// Determine target directory
 	category := models.GetFileCategory(filename)
 	targetDir := filepath.Join(s.cfg.Storage.BasePath, models.GetCategoryFolderName(category))
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		log.Printf("Failed to create target dir: %v", err)
-		_, _ = ctx.Reply(update, ext.ReplyTextString(fmt.Sprintf("❌ 错误: %v", err)), nil)
+		mobileReply(ctx, update, fmt.Sprintf("❌ 错误: %v", err))
 		return dispatcher.EndGroups
 	}
 
 	targetPath := filepath.Join(targetDir, filename)
 
-	// Get file size from media (if available)
 	var fileSize int64 = 0
 	if media, ok := msg.Media.(*tg.MessageMediaDocument); ok {
 		if doc, ok := media.Document.(*tg.Document); ok {
@@ -356,7 +435,6 @@ func (s *Service) handleMedia(ctx *ext.Context, update *ext.Update) error {
 		}
 	}
 
-	// Create job
 	job := &models.DownloadJob{
 		ID:         fmt.Sprintf("job_%d", msg.ID),
 		Filename:   filename,
@@ -369,61 +447,53 @@ func (s *Service) handleMedia(ctx *ext.Context, update *ext.Update) error {
 		FileSize:   fileSize,
 	}
 
-	// Submit job to manager for tracking
 	s.downloadMgr.Submit(job)
 
-	// Download with retry
-	go func() {
+	// Pass context to goroutine properly
+	go func(jobCtx *ext.Context, jobUpdate *ext.Update, jobFilename string, jobMedia tg.MessageMediaClass, jobTargetPath string) {
 		const maxRetries = 3
 		retryCount := 0
 		success := false
 
 		for retryCount < maxRetries && !success {
-			// Check for existing file (resume)
 			var startOffset int64 = 0
-			if info, err := os.Stat(targetPath); err == nil && info.Size() > 0 {
+			if info, err := os.Stat(jobTargetPath); err == nil && info.Size() > 0 {
 				startOffset = info.Size()
-				log.Printf("[%s] Resuming from offset %s", filename, formatBytes(startOffset))
+				log.Printf("[%s] Resuming from offset %s", jobFilename, formatBytes(startOffset))
 			}
 
-			// Download using gotgproto's DownloadMedia
-			err = s.downloadWithMedia(ctx, msg.Media, targetPath, startOffset)
+			err = s.downloadWithMedia(jobCtx, jobMedia, jobTargetPath, startOffset)
 
 			if err == nil {
-				log.Printf("[%s] Download completed: %s", filename, targetPath)
+				log.Printf("[%s] Download completed: %s", jobFilename, jobTargetPath)
 				success = true
 				return
 			}
 
-			log.Printf("[%s] Download failed (attempt %d/%d): %v", filename, retryCount+1, maxRetries, err)
+			log.Printf("[%s] Download failed (attempt %d/%d): %v", jobFilename, retryCount+1, maxRetries, err)
 			retryCount++
 			if retryCount < maxRetries {
 				time.Sleep(2 * time.Second)
 			} else {
-				log.Printf("[%s] Download failed after %d retries", filename, maxRetries)
-				// Notify user about failure
-				_, _ = ctx.Reply(update, ext.ReplyTextString(fmt.Sprintf("❌ 下载失败: %s - %v", filename, err)), nil)
+				log.Printf("[%s] Download failed after %d retries", jobFilename, maxRetries)
+				_, _ = jobCtx.Reply(jobUpdate, ext.ReplyTextString(fmt.Sprintf("❌ 下载失败: %s - %v", truncate(jobFilename, 20), err)), nil)
 			}
 		}
-	}()
+	}(ctx, update, filename, msg.Media, targetPath)
 
 	return dispatcher.EndGroups
 }
 
-// downloadWithMedia downloads media using ctx.DownloadMedia
 func (s *Service) downloadWithMedia(ctx *ext.Context, media tg.MessageMediaClass, targetPath string, startOffset int64) error {
-	// If resuming from offset, check if file exists
 	if startOffset > 0 {
 		if info, err := os.Stat(targetPath); err == nil && info.Size() == startOffset {
 			log.Printf("[resume] File exists with size %s, will continue", formatBytes(startOffset))
 		} else if err == nil {
-			// File size doesn't match - start fresh
 			log.Printf("[resume] File size mismatch, re-downloading")
 			startOffset = 0
 		}
 	}
 
-	// Use gotgproto's DownloadMedia API
 	_, err := ctx.DownloadMedia(
 		media,
 		ext.DownloadOutputPath(targetPath),
@@ -436,7 +506,6 @@ func (s *Service) downloadWithMedia(ctx *ext.Context, media tg.MessageMediaClass
 		return fmt.Errorf("download failed: %w", err)
 	}
 
-	// Verify downloaded file
 	info, err := os.Stat(targetPath)
 	if err != nil {
 		return fmt.Errorf("file not found after download: %w", err)
@@ -449,7 +518,6 @@ func (s *Service) downloadWithMedia(ctx *ext.Context, media tg.MessageMediaClass
 	return nil
 }
 
-// optimizeFilename cleans up numeric-prefixed filenames
 func optimizeFilename(name string) string {
 	ext := ""
 	if i := strings.LastIndex(name, "."); i > 0 {
